@@ -1,3 +1,4 @@
+import { GoogleGenAI } from "@google/genai";
 import { UIMessage } from "ai";
 import { cookies } from "next/headers";
 
@@ -44,31 +45,23 @@ export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json();
   const contents = convertMessagesToGeminiContents(messages);
 
-  const response = await fetch(
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:streamGenerateContent?alt=sse",
-    {
-      method: "POST",
+  const ai = new GoogleGenAI({
+    apiKey: "placeholder",
+    httpOptions: {
       headers: {
         Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
         "x-goog-user-project": "my-assistant-494612",
       },
-      body: JSON.stringify({
-        contents,
-        systemInstruction: {
-          parts: [{ text: "You are a helpful assistant. Be concise." }],
-        },
-      }),
     },
-  );
+  });
 
-  console.log("response: ", response);
-
-  if (!response.ok) {
-    const errorText = await String(response.body);
-    console.error("Gemini API error:", response.status, errorText);
-    return new Response(errorText, { status: response.status });
-  }
+  const response = await ai.models.generateContentStream({
+    model: "gemini-3-flash-preview",
+    contents,
+    config: {
+      systemInstruction: "You are a helpful assistant. Be concise.",
+    },
+  });
 
   const messageId = crypto.randomUUID();
   const textPartId = crypto.randomUUID();
@@ -78,7 +71,7 @@ export async function POST(req: Request) {
     async start(controller) {
       controller.enqueue(
         encoder.encode(
-          `data: ${JSON.stringify({ type: "message-start", messageId })}\n\n`,
+          `data: ${JSON.stringify({ type: "start", messageId })}\n\n`,
         ),
       );
       controller.enqueue(
@@ -87,37 +80,14 @@ export async function POST(req: Request) {
         ),
       );
 
-      const reader = response.body!.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            const jsonStr = line.slice(6).trim();
-            if (!jsonStr || jsonStr === "[DONE]") continue;
-
-            try {
-              const data = JSON.parse(jsonStr);
-              const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-              if (text) {
-                controller.enqueue(
-                  encoder.encode(
-                    `data: ${JSON.stringify({ type: "text-delta", id: textPartId, delta: text })}\n\n`,
-                  ),
-                );
-              }
-            } catch {
-              // skip malformed JSON
-            }
-          }
+      for await (const chunk of response) {
+        const text = chunk.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (text) {
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({ type: "text-delta", id: textPartId, delta: text })}\n\n`,
+            ),
+          );
         }
       }
 
@@ -128,7 +98,7 @@ export async function POST(req: Request) {
       );
       controller.enqueue(
         encoder.encode(
-          `data: ${JSON.stringify({ type: "finish-message", messageId })}\n\n`,
+          `data: ${JSON.stringify({ type: "finish", finishReason: "stop" })}\n\n`,
         ),
       );
       controller.enqueue("data: [DONE]\n\n");
