@@ -4,7 +4,7 @@ A Next.js demo app that calls the Gemini API on behalf of a user using Google OA
 
 ## Demo
 
-https://github.com/user-attachments/assets/demo.mov
+![Demo](demo.gif)
 
 ## How It Works
 
