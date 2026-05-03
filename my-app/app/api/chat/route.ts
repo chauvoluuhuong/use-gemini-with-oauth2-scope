@@ -1,6 +1,8 @@
 import { GoogleGenAI } from "@google/genai";
 import { UIMessage } from "ai";
 import { cookies } from "next/headers";
+import { readFileSync } from "fs";
+import { join } from "path";
 
 interface GeminiPart {
   text?: string;
@@ -45,12 +47,16 @@ export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json();
   const contents = convertMessagesToGeminiContents(messages);
 
+  const secretPath = join(process.cwd(), "..", "oauth2-client-secret.json");
+  const secret = JSON.parse(readFileSync(secretPath, "utf-8"));
+  const projectId = secret.web.project_id;
+
   const ai = new GoogleGenAI({
     apiKey: "placeholder",
     httpOptions: {
       headers: {
         Authorization: `Bearer ${accessToken}`,
-        "x-goog-user-project": "my-assistant-494612",
+        "x-goog-user-project": projectId,
       },
     },
   });
@@ -62,6 +68,7 @@ export async function POST(req: Request) {
       systemInstruction: "You are a helpful assistant. Be concise.",
     },
   });
+  console.log("response: ", response);
 
   const messageId = crypto.randomUUID();
   const textPartId = crypto.randomUUID();
