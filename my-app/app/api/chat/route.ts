@@ -1,40 +1,8 @@
-import { GoogleGenAI } from "@google/genai";
-import { UIMessage } from "ai";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { streamText, UIMessage } from "ai";
 import { cookies } from "next/headers";
 import { readFileSync } from "fs";
 import { join } from "path";
-
-interface GeminiPart {
-  text?: string;
-}
-
-interface GeminiContent {
-  role: string;
-  parts: GeminiPart[];
-}
-
-function convertMessagesToGeminiContents(
-  messages: UIMessage[],
-): GeminiContent[] {
-  const contents: GeminiContent[] = [];
-
-  for (const message of messages) {
-    const role = message.role === "user" ? "user" : "model";
-    const textParts: GeminiPart[] = [];
-
-    for (const part of message.parts) {
-      if (part.type === "text") {
-        textParts.push({ text: part.text });
-      }
-    }
-
-    if (textParts.length > 0) {
-      contents.push({ role, parts: textParts });
-    }
-  }
-
-  return contents;
-}
 
 export async function POST(req: Request) {
   const cookieStore = await cookies();
@@ -45,30 +13,30 @@ export async function POST(req: Request) {
   }
 
   const { messages }: { messages: UIMessage[] } = await req.json();
-  const contents = convertMessagesToGeminiContents(messages);
 
   const secretPath = join(process.cwd(), "..", "oauth2-client-secret.json");
   const secret = JSON.parse(readFileSync(secretPath, "utf-8"));
   const projectId = secret.web.project_id;
 
-  const ai = new GoogleGenAI({
+  const google = createGoogleGenerativeAI({
     apiKey: "placeholder",
-    httpOptions: {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "x-goog-user-project": projectId,
-      },
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "x-goog-user-project": projectId,
     },
   });
 
-  const response = await ai.models.generateContentStream({
-    model: "gemini-3-flash-preview",
-    contents,
-    config: {
-      systemInstruction: "You are a helpful assistant. Be concise.",
-    },
+  const { textStream } = streamText({
+    model: google("models/gemini-3-flash-preview"),
+    system: "You are a helpful assistant. Be concise.",
+    messages: messages.map((msg) => ({
+      role: msg.role === "assistant" ? "assistant" : "user",
+      content: msg.parts
+        .filter((p) => p.type === "text")
+        .map((p) => p.text)
+        .join(""),
+    })),
   });
-  console.log("response: ", response);
 
   const messageId = crypto.randomUUID();
   const textPartId = crypto.randomUUID();
@@ -87,15 +55,12 @@ export async function POST(req: Request) {
         ),
       );
 
-      for await (const chunk of response) {
-        const text = chunk.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (text) {
-          controller.enqueue(
-            encoder.encode(
-              `data: ${JSON.stringify({ type: "text-delta", id: textPartId, delta: text })}\n\n`,
-            ),
-          );
-        }
+      for await (const text of textStream) {
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({ type: "text-delta", id: textPartId, delta: text })}\n\n`,
+          ),
+        );
       }
 
       controller.enqueue(
