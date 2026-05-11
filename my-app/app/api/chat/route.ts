@@ -1,37 +1,16 @@
 import { GoogleGenAI } from "@google/genai";
-import { UIMessage } from "ai";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { streamText, type UIMessage } from "ai";
 import { cookies } from "next/headers";
 
-interface GeminiPart {
-  text?: string;
-}
-
-interface GeminiContent {
-  role: string;
-  parts: GeminiPart[];
-}
-
-function convertMessagesToGeminiContents(
-  messages: UIMessage[],
-): GeminiContent[] {
-  const contents: GeminiContent[] = [];
-
-  for (const message of messages) {
-    const role = message.role === "user" ? "user" : "model";
-    const textParts: GeminiPart[] = [];
-
-    for (const part of message.parts) {
-      if (part.type === "text") {
-        textParts.push({ text: part.text });
-      }
-    }
-
-    if (textParts.length > 0) {
-      contents.push({ role, parts: textParts });
-    }
-  }
-
-  return contents;
+function convertUIMessagesToCoreMessages(messages: UIMessage[]) {
+  return messages.map((m) => ({
+    role: m.role === "assistant" ? "assistant" as const : m.role as "user" | "system",
+    content: m.parts
+      .filter((p): p is Extract<typeof p, { type: "text" }> => p.type === "text")
+      .map((p) => p.text)
+      .join(""),
+  }));
 }
 
 export async function POST(req: Request) {
@@ -43,76 +22,27 @@ export async function POST(req: Request) {
   }
 
   const { messages }: { messages: UIMessage[] } = await req.json();
-  const contents = convertMessagesToGeminiContents(messages);
+
+  const authHeaders = {
+    Authorization: `Bearer ${accessToken}`,
+    "x-goog-user-project": "my-assistant-494612",
+  };
 
   const ai = new GoogleGenAI({
     apiKey: "placeholder",
-    httpOptions: {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "x-goog-user-project": "my-assistant-494612",
-      },
-    },
+    httpOptions: { headers: authHeaders },
   });
 
-  const response = await ai.models.generateContentStream({
-    model: "gemini-3-flash-preview",
-    contents,
-    config: {
-      systemInstruction: "You are a helpful assistant. Be concise.",
-    },
+  const google = createGoogleGenerativeAI({
+    apiKey: "placeholder",
+    headers: authHeaders,
   });
 
-  const messageId = crypto.randomUUID();
-  const textPartId = crypto.randomUUID();
-
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream({
-    async start(controller) {
-      controller.enqueue(
-        encoder.encode(
-          `data: ${JSON.stringify({ type: "start", messageId })}\n\n`,
-        ),
-      );
-      controller.enqueue(
-        encoder.encode(
-          `data: ${JSON.stringify({ type: "text-start", id: textPartId })}\n\n`,
-        ),
-      );
-
-      for await (const chunk of response) {
-        const text = chunk.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (text) {
-          controller.enqueue(
-            encoder.encode(
-              `data: ${JSON.stringify({ type: "text-delta", id: textPartId, delta: text })}\n\n`,
-            ),
-          );
-        }
-      }
-
-      controller.enqueue(
-        encoder.encode(
-          `data: ${JSON.stringify({ type: "text-end", id: textPartId })}\n\n`,
-        ),
-      );
-      controller.enqueue(
-        encoder.encode(
-          `data: ${JSON.stringify({ type: "finish", finishReason: "stop" })}\n\n`,
-        ),
-      );
-      controller.enqueue("data: [DONE]\n\n");
-      controller.close();
-    },
+  const result = streamText({
+    model: google("gemini-3-flash-preview"),
+    system: "You are a helpful assistant. Be concise.",
+    messages: convertUIMessagesToCoreMessages(messages),
   });
 
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-      "x-vercel-ai-ui-message-stream": "v1",
-      "x-accel-buffering": "no",
-    },
-  });
+  return result.toUIMessageStreamResponse();
 }
